@@ -43,17 +43,9 @@ jobs:
           $w = if (Test-Path 'D:\') { 'D:\w' } else { 'C:\w' }
           New-Item -ItemType Directory -Force $w | Out-Null
           "W=$w" >> $env:GITHUB_ENV
-          "VCPKG_ROOT=$w\vcpkg" >> $env:GITHUB_ENV
+          "VCPKGDIR=$w\vcpkg" >> $env:GITHUB_ENV
           "VCPKG_DEFAULT_BINARY_CACHE=$w\bincache" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Force "$w\bincache" | Out-Null
-
-      - name: Free disk space on C
-        shell: pwsh
-        run: |
-          foreach ($p in 'C:\Android','C:\hostedtoolcache\windows\CodeQL','C:\Program Files\dotnet\sdk\6*','C:\ghcup','C:\Strawberry','C:\Julia*','C:\Miniconda','C:\rtools*') {
-            Get-Item $p -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          }
-          Get-PSDrive C | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
 
       - name: Fetch KiCad dependency manifest
         shell: pwsh
@@ -77,9 +69,9 @@ jobs:
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
-          git -C "$env:VCPKG_ROOT" checkout $env:VCPKG_COMMIT
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKGDIR"
+          git -C "$env:VCPKGDIR" checkout $env:VCPKG_COMMIT
+          & "$env:VCPKGDIR\bootstrap-vcpkg.bat" -disableMetrics
 
       - name: Build dependencies (resumable)
         id: install
@@ -88,8 +80,9 @@ jobs:
         continue-on-error: true
         run: |
           "complete=false" >> $env:GITHUB_OUTPUT
+          $env:VCPKG_ROOT = $env:VCPKGDIR
           Set-Location "$env:W\kicad"
-          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows `
+          & "$env:VCPKGDIR\vcpkg.exe" install --triplet x64-windows `
               --overlay-triplets=tools/custom_vcpkg_triplets `
               --x-install-root="$env:W\vi" --x-buildtrees-root="$env:W\bt" `
               --clean-after-build
@@ -127,7 +120,7 @@ jobs:
           $w = if (Test-Path 'D:\') { 'D:\w' } else { 'C:\w' }
           New-Item -ItemType Directory -Force $w | Out-Null
           "W=$w" >> $env:GITHUB_ENV
-          "VCPKG_ROOT=$w\vcpkg" >> $env:GITHUB_ENV
+          "VCPKGDIR=$w\vcpkg" >> $env:GITHUB_ENV
           "VCPKG_DEFAULT_BINARY_CACHE=$w\bincache" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Force "$w\bincache" | Out-Null
 
@@ -159,17 +152,18 @@ jobs:
       - name: Tools (vcpkg, swig, ninja)
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
-          git -C "$env:VCPKG_ROOT" checkout $env:VCPKG_COMMIT
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKGDIR"
+          git -C "$env:VCPKGDIR" checkout $env:VCPKG_COMMIT
+          & "$env:VCPKGDIR\bootstrap-vcpkg.bat" -disableMetrics
           choco install -y --no-progress swig ninja
 
       - name: Configure
         shell: pwsh
         run: |
+          $env:VCPKG_ROOT = $env:VCPKGDIR
           cmake -S "$env:W\kicad" -B "$env:W\b" -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKGDIR\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DVCPKG_OVERLAY_TRIPLETS="$env:W\kicad\tools\custom_vcpkg_triplets" `
             -DVCPKG_INSTALLED_DIR="$env:W\vi" `
@@ -185,7 +179,9 @@ jobs:
       - name: Build
         shell: pwsh
         timeout-minutes: 280
-        run: cmake --build "$env:W\b" --parallel 4
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKGDIR
+          cmake --build "$env:W\b" --parallel 4
 
       - name: Install and package (portable)
         shell: pwsh

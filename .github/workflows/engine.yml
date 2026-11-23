@@ -1,0 +1,28 @@
+name: engine tests
+
+on:
+  push:
+    paths: ["engine/**", ".github/workflows/engine.yml"]
+  pull_request:
+    paths: ["engine/**"]
+  workflow_dispatch:
+
+jobs:
+  examples:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install KiCad (for symbol libraries and kicad-cli cross-check)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends kicad kicad-symbols
+      - name: Build and verify every example
+        working-directory: engine
+        run: python3 run_examples.py
+      - name: Upload generated schematics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-examples
+          path: engine/out/
+          retention-days: 14

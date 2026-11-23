@@ -1,0 +1,211 @@
+name: windows build
+
+# Builds KiCad Pro+ for Windows: upstream KiCad (tag in ci/KICAD_VERSION) + patches/*.patch.
+#
+# Two jobs:
+#   deps   builds KiCad's vcpkg dependencies into a binary cache. It is *resumable*:
+#          the first time it will not finish inside one runner session, so it stops
+#          before the 6 h job limit, saves what it built, and the next run continues.
+#   kicad  runs only once every dependency is cached, then builds, packages and
+#          publishes a portable zip as a GitHub (pre)release.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["patches/**", "ci/**", ".github/workflows/windows-build.yml"]
+
+concurrency:
+  group: windows-build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  # vcpkg tool + ports: the same commit KiCad pins as its default-registry baseline
+  VCPKG_COMMIT: 01e159b519b7e791cc5bb3548663a26d9c0922a3
+  VCPKG_DISABLE_METRICS: "1"
+
+jobs:
+  deps:
+    runs-on: windows-2022
+    timeout-minutes: 350
+    outputs:
+      complete: ${{ steps.install.outputs.complete }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick work drive and show disk space
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+          $w = if (Test-Path 'D:\') { 'D:\w' } else { 'C:\w' }
+          New-Item -ItemType Directory -Force $w | Out-Null
+          "W=$w" >> $env:GITHUB_ENV
+          "VCPKG_ROOT=$w\vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$w\bincache" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force "$w\bincache" | Out-Null
+
+      - name: Free disk space on C
+        shell: pwsh
+        run: |
+          foreach ($p in 'C:\Android','C:\hostedtoolcache\windows\CodeQL','C:\Program Files\dotnet\sdk\6*','C:\ghcup','C:\Strawberry','C:\Julia*','C:\Miniconda','C:\rtools*') {
+            Get-Item $p -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          Get-PSDrive C | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+
+      - name: Fetch KiCad dependency manifest
+        shell: pwsh
+        run: |
+          $tag = (Get-Content ci/KICAD_VERSION).Trim()
+          git clone --depth 1 --branch $tag --filter=blob:none --sparse https://github.com/KiCad/kicad-source-mirror "$env:W\kicad"
+          git -C "$env:W\kicad" sparse-checkout set tools/custom_vcpkg_triplets
+          Get-ChildItem "$env:W\kicad"
+
+      - name: Restore dependency cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-bin-${{ hashFiles('ci/KICAD_VERSION') }}-${{ github.run_id }}
+          restore-keys: vcpkg-bin-${{ hashFiles('ci/KICAD_VERSION') }}-
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" checkout $env:VCPKG_COMMIT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Build dependencies (resumable)
+        id: install
+        shell: pwsh
+        timeout-minutes: 290
+        continue-on-error: true
+        run: |
+          "complete=false" >> $env:GITHUB_OUTPUT
+          Set-Location "$env:W\kicad"
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows `
+              --overlay-triplets=tools/custom_vcpkg_triplets `
+              --x-install-root="$env:W\vi" --x-buildtrees-root="$env:W\bt" `
+              --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "complete=true" >> $env:GITHUB_OUTPUT
+
+      - name: Save dependency cache (also after a timeout)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-bin-${{ hashFiles('ci/KICAD_VERSION') }}-${{ github.run_id }}
+
+      - name: Report
+        if: always()
+        shell: pwsh
+        run: |
+          $n = (Get-ChildItem $env:VCPKG_DEFAULT_BINARY_CACHE -Recurse -Filter *.zip).Count
+          "Cached packages: $n"
+          if ("${{ steps.install.outputs.complete }}" -ne "true") {
+            "::warning::Dependencies not finished yet ($n packages cached). Run this workflow again to continue."
+          }
+
+  kicad:
+    needs: deps
+    if: needs.deps.outputs.complete == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick work drive
+        shell: pwsh
+        run: |
+          $w = if (Test-Path 'D:\') { 'D:\w' } else { 'C:\w' }
+          New-Item -ItemType Directory -Force $w | Out-Null
+          "W=$w" >> $env:GITHUB_ENV
+          "VCPKG_ROOT=$w\vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$w\bincache" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force "$w\bincache" | Out-Null
+
+      - name: Fetch KiCad source and apply KiCad Pro+ patches
+        shell: pwsh
+        run: |
+          $tag = (Get-Content ci/KICAD_VERSION).Trim()
+          git clone --depth 1 --branch $tag https://github.com/KiCad/kicad-source-mirror "$env:W\kicad"
+          git -C "$env:W\kicad" config user.email "ci@kicad-pro-plus"
+          git -C "$env:W\kicad" config user.name "kicad-pro-plus ci"
+          $patches = Get-ChildItem patches -Filter *.patch | Sort-Object Name
+          foreach ($p in $patches) {
+            "Applying $($p.Name)"
+            git -C "$env:W\kicad" am --3way $p.FullName
+            if ($LASTEXITCODE -ne 0) { throw "patch $($p.Name) failed" }
+          }
+
+      - name: Restore dependency cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-bin-${{ hashFiles('ci/KICAD_VERSION') }}-none
+          restore-keys: vcpkg-bin-${{ hashFiles('ci/KICAD_VERSION') }}-
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Tools (vcpkg, swig, ninja)
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" checkout $env:VCPKG_COMMIT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          choco install -y --no-progress swig ninja
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S "$env:W\kicad" -B "$env:W\b" -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DVCPKG_OVERLAY_TRIPLETS="$env:W\kicad\tools\custom_vcpkg_triplets" `
+            -DVCPKG_INSTALLED_DIR="$env:W\vi" `
+            -DVCPKG_INSTALL_OPTIONS="--x-buildtrees-root=$env:W\bt;--clean-after-build" `
+            -DKICAD_BUILD_QA_TESTS=OFF `
+            -DKICAD_SCRIPTING_WXPYTHON=ON `
+            -DKICAD_WIN32_DPI_AWARE=ON `
+            -DKICAD_BUILD_I18N=OFF `
+            -DKICAD_USE_SENTRY=OFF `
+            -DKICAD_UPDATE_CHECK=OFF `
+            -DCMAKE_INSTALL_PREFIX="$env:W\KiCadProPlus"
+
+      - name: Build
+        shell: pwsh
+        timeout-minutes: 280
+        run: cmake --build "$env:W\b" --parallel 4
+
+      - name: Install and package (portable)
+        shell: pwsh
+        run: |
+          cmake --install "$env:W\b"
+          $bin = "$env:W\KiCadProPlus\bin"
+          Get-ChildItem "$env:W\vi\x64-windows\bin" -Filter *.dll | Copy-Item -Destination $bin -Force
+          if (Test-Path "$env:W\vi\x64-windows\tools\python3") {
+            Copy-Item "$env:W\vi\x64-windows\tools\python3\*" -Destination $bin -Recurse -Force
+          }
+          Copy-Item -Recurse engine "$env:W\KiCadProPlus\engine"
+          Copy-Item ci\KiCadProPlus.cmd "$env:W\KiCadProPlus\KiCadProPlus.cmd"
+          Compress-Archive -Path "$env:W\KiCadProPlus\*" -DestinationPath "$env:W\KiCadProPlus-win64.zip" -CompressionLevel Optimal
+          "ZIP=$env:W\KiCadProPlus-win64.zip" >> $env:GITHUB_ENV
+
+      - name: Publish pre-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "build-$env:GITHUB_RUN_NUMBER"
+          gh release create $tag "$env:ZIP" --prerelease --title "KiCad Pro+ build $env:GITHUB_RUN_NUMBER" `
+            --notes "Portable build of KiCad $(Get-Content ci/KICAD_VERSION) + KiCad Pro+ patches. Unzip anywhere and run KiCadProPlus.cmd."

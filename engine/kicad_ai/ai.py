@@ -71,7 +71,7 @@ class Provider:
         self.model = cfg.get("model") or p["model"]
         self.api_key = cfg.get("api_key") or (os.environ.get(p["key_env"]) if p["key_env"] else None)
         self.timeout = float(cfg.get("timeout", 900))
-        self.num_ctx = cfg.get("num_ctx", 16384)        # Ollama context window
+        self.num_ctx = cfg.get("num_ctx", 32768)        # Ollama context window
         self.think = cfg.get("think", "medium")          # gpt-oss thinking effort: low/medium/high   # big local models can be slow
         if not self.base_url:
             raise AIError("provider 'custom' needs base_url")

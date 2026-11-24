@@ -99,7 +99,7 @@ class Provider:
         if self.kind == "anthropic" and not self.api_key:
             raise AIError("Claude needs an API key (settings or ANTHROPIC_API_KEY)")
 
-    def _post(self, url, body, headers):
+    def _post(self, url, body, headers, _waited=0):
         req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
                                      headers=dict(headers, **{"content-type": "application/json",
                                                               "user-agent": USER_AGENT}))
@@ -108,6 +108,28 @@ class Provider:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:500]
+            if e.code == 429 and _waited < 300:
+                # free tiers (Groq, Gemini, OpenRouter) limit tokens/requests per minute:
+                # wait as long as the service asks, then carry on instead of failing
+                wait = None
+                try:
+                    wait = float(e.headers.get("retry-after") or "")
+                except (TypeError, ValueError):
+                    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", detail)
+                    if m:
+                        wait = int(m.group(1) or 0) * 60 + float(m.group(2))
+                if wait is None:
+                    wait = 20.0
+                wait = min(max(wait + 1.0, 2.0), 90.0)
+                if "per day" in detail.lower() or "(rpd)" in detail.lower() or "tpd" in detail.lower():
+                    raise AIError("%s: daily free limit reached - try again tomorrow or pick another "
+                                  "provider. (%s)" % (self.name, detail[:200]))
+                end = time.time() + wait
+                while time.time() < end:
+                    if self.progress:
+                        self.progress("free-tier limit: waiting %ds, then continuing..." % (end - time.time() + 0.5))
+                    time.sleep(min(1.0, max(0.0, end - time.time())))
+                return self._post(url, body, headers, _waited + wait)
             raise AIError("%s returned HTTP %d: %s" % (self.name, e.code, detail))
         except urllib.error.URLError as e:
             raise AIError("cannot reach %s at %s (%s)" % (self.name, self.base_url, e.reason))
@@ -318,10 +340,16 @@ def autofix(intent, library):
             lib, name = sym.split(":")
             try:
                 near = difflib.get_close_matches(name, library.names(lib), n=1, cutoff=0.85)
+                near = [lib + ":" + n for n in near]
             except KeyError:
                 near = []
+            other = library.find(name)          # right name, wrong library (Device:SW_Push)
+            if other:
+                near = other[:1]
+            elif not near:
+                near = library.find_close(name, cutoff=0.85)[:1]
             if near:
-                c["symbol"] = lib + ":" + near[0]
+                c["symbol"] = near[0]
                 fixes.append("%s symbol %s -> %s" % (c["ref"], sym, c["symbol"]))
                 try:
                     syms[c["ref"]] = library.get(c["symbol"])
@@ -363,15 +391,26 @@ def autofix(intent, library):
                     pick = cand
             if pick is None and fp and ":" in fp:
                 lib, name = fp.split(":", 1)
-                key = [k for k in re.split(r"[_-]", name) if k][:2]
+                import difflib
+                toks = {k.lower() for k in re.split(r"[_-]", name) if k}
                 for d in fps:
                     pd = os.path.join(d, lib + ".pretty")
                     if os.path.isdir(pd):
-                        cands = sorted(f[:-10] for f in os.listdir(pd) if f.endswith(".kicad_mod")
-                                       and all(k.lower() in f.lower() for k in key))
-                        cands.sort(key=lambda f: ("HandSolder" in f, len(f)))
-                        if cands:
-                            pick = lib + ":" + cands[0]; break
+                        best = None
+                        for f in os.listdir(pd):
+                            if not f.endswith(".kicad_mod"):
+                                continue
+                            f = f[:-10]
+                            ft = {k.lower() for k in re.split(r"[_-]", f) if k}
+                            shared = len(toks & ft)
+                            if shared < max(2, (len(toks) + 1) // 2):
+                                continue
+                            score = (shared, "HandSolder" not in f,
+                                     difflib.SequenceMatcher(None, name.lower(), f.lower()).ratio())
+                            if best is None or score > best[0]:
+                                best = (score, f)
+                        if best:
+                            pick = lib + ":" + best[1]; break
             if pick is None:
                 import difflib
                 lib, name = (fp.split(":", 1) + [""])[:2] if fp and ":" in fp else ("", fp or "")

@@ -200,6 +200,36 @@ class Library:
                 raise KeyError("Symbol library '%s' not found in %s" % (lib, self.dirs))
         return self._files[lib]
 
+    def _index(self):
+        """name -> [lib_id] over every library, built once (only used when the AI got a name wrong)."""
+        if getattr(self, "_idx", None) is None:
+            import re as _re
+            self._idx = {}
+            for d in self.dirs:
+                if not os.path.isdir(d):
+                    continue
+                for fn in sorted(os.listdir(d)):
+                    if not fn.endswith(".kicad_sym"):
+                        continue
+                    lib = fn[:-10]
+                    with open(os.path.join(d, fn), encoding="utf-8", errors="replace") as f:
+                        txt = f.read()
+                    for n in _re.findall(r'\(symbol "([^"]+)"', txt):
+                        if _re.search(r"_\d+_\d+$", n):
+                            continue          # unit sub-symbol
+                        n = n.split(":")[-1]
+                        self._idx.setdefault(n.lower(), []).append(lib + ":" + n)
+        return self._idx
+
+    def find(self, name):
+        """Every library that has a symbol called exactly `name` (case-insensitive)."""
+        return list(self._index().get(name.lower(), []))
+
+    def find_close(self, name, cutoff=0.85):
+        import difflib
+        idx = self._index()
+        return [idx[k][0] for k in difflib.get_close_matches(name.lower(), list(idx), n=3, cutoff=cutoff)]
+
     def names(self, lib):
         return [e[1] for e in self._load(lib)[1:] if _is(e, "symbol")]
 

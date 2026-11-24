@@ -70,7 +70,7 @@ class Provider:
         self.base_url = (cfg.get("base_url") or p["base_url"]).rstrip("/")
         self.model = cfg.get("model") or p["model"]
         self.api_key = cfg.get("api_key") or (os.environ.get(p["key_env"]) if p["key_env"] else None)
-        self.timeout = float(cfg.get("timeout", 180))
+        self.timeout = float(cfg.get("timeout", 900))   # big local models can be slow
         if not self.base_url:
             raise AIError("provider 'custom' needs base_url")
         if not self.model:
@@ -141,7 +141,7 @@ If you receive an ERROR message, fix exactly that problem and reply with the ful
 
 
 def _extract_json(text):
-    t = text.strip()
+    t = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()   # reasoning models
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
     a, b = t.find("{"), t.rfind("}")
     if a < 0 or b < a:

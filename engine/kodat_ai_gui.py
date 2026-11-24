@@ -269,7 +269,7 @@ class SettingsPage(wx.Panel):
         hint = wx.StaticText(self, label=(
             "Claude / OpenAI / DeepSeek / Kimi (via Fireworks) need an API key. Ollama runs on this computer, no key\n"
             "(local design needs an NVIDIA GPU with 16 GB+; 24 GB recommended).\n"
-            "Custom = any OpenAI-compatible service (OpenRouter, LM Studio, Groq...): set its Base URL.\n"
+            "Free to try: groq (console.groq.com), gemini (aistudio.google.com), openrouter. Custom = any OpenAI-compatible URL.\n"
             "Settings are saved only on this computer: %s" % ai.config_path()))
         self.save = wx.Button(self, label="Save")
         self.test = wx.Button(self, label="Test connection")

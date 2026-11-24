@@ -31,6 +31,12 @@ PRESETS = {
                  "model": "accounts/fireworks/models/kimi-k3p1-pro", "key_env": "FIREWORKS_API_KEY"},
     "ollama":   {"kind": "ollama", "base_url": "http://localhost:11434",
                  "model": "qwen2.5:7b", "key_env": None},
+    "groq":     {"kind": "openai", "base_url": "https://api.groq.com/openai/v1",
+                 "model": "openai/gpt-oss-120b", "key_env": "GROQ_API_KEY"},
+    "gemini":   {"kind": "openai", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                 "model": "gemini-3.8-flash", "key_env": "GEMINI_API_KEY"},
+    "openrouter": {"kind": "openai", "base_url": "https://openrouter.ai/api/v1",
+                 "model": "openrouter/free", "key_env": "OPENROUTER_API_KEY"},
     "custom":   {"kind": "openai", "base_url": "", "model": "", "key_env": "AI_API_KEY"},
 }
 
@@ -62,6 +68,11 @@ class AIError(Exception):
     pass
 
 
+# Some hosts sit behind Cloudflare, which blocks Python's default "Python-urllib"
+# User-Agent with "error code: 1010". Always send a normal one.
+USER_AGENT = "KODAT-PCB/1.0 (+https://github.com/LoayGhannam/kicad-pro-plus)"
+
+
 class Provider:
     def __init__(self, cfg):
         name = cfg.get("provider", "ollama")
@@ -80,6 +91,9 @@ class Provider:
         self.skip_hw = bool(cfg.get("skip_hardware_check"))   # big local models can be slow
         if not self.base_url:
             raise AIError("provider 'custom' needs base_url")
+        if not self.base_url.lower().startswith(("http://", "https://")):
+            raise AIError("Base URL must start with https:// - did you paste the API key "
+                          "into the Base URL box? Put the key in the 'API key' box.")
         if not self.model:
             raise AIError("no model set")
         if self.kind == "anthropic" and not self.api_key:
@@ -87,7 +101,8 @@ class Provider:
 
     def _post(self, url, body, headers):
         req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
-                                     headers=dict(headers, **{"content-type": "application/json"}))
+                                     headers=dict(headers, **{"content-type": "application/json",
+                                                              "user-agent": USER_AGENT}))
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
@@ -101,7 +116,8 @@ class Provider:
         """Stream so a long answer never hits the timeout, and report live progress."""
         body = dict(body, stream=True)
         req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
-                                     headers={"content-type": "application/json"})
+                                     headers={"content-type": "application/json",
+                                              "user-agent": USER_AGENT})
         parts, n_think, n_text, t0, last, first = [], 0, 0, time.time(), 0, None
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:

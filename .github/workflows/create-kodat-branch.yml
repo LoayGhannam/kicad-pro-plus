@@ -30,6 +30,8 @@ jobs:
           # a shallow clone cannot be pushed to a repo without its history:
           # start a fresh single-commit history from the tagged tree instead
           rm -rf .git
+          # upstream's own CI files are not ours to run (and the job token may not push workflows)
+          rm -rf .github .gitlab .gitlab-ci.yml
           git init -q -b kodat
           git config user.name "kodat-pcb ci"
           git config user.email "ci@kodat-pcb"

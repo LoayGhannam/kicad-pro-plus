@@ -90,7 +90,7 @@ class Provider:
         except urllib.error.URLError as e:
             raise AIError("cannot reach %s at %s (%s)" % (self.name, self.base_url, e.reason))
 
-    def chat(self, system, messages, max_tokens=4096):
+    def chat(self, system, messages, max_tokens=16384):
         """messages: [{"role": "user"|"assistant", "content": str}] -> reply text"""
         if self.kind == "anthropic":
             data = self._post(self.base_url + "/v1/messages",
@@ -104,12 +104,15 @@ class Provider:
                            "messages": [{"role": "system", "content": system}] + messages},
                           headers)
         try:
-            return data["choices"][0]["message"]["content"] or ""
+            text = data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError):
             raise AIError("unexpected reply from %s: %s" % (self.name, str(data)[:300]))
+        if not text.strip():
+            raise AIError("%s returned an empty answer (a thinking model may have run out of tokens)" % self.model)
+        return text
 
     def test(self):
-        return self.chat("Reply with the single word OK.", [{"role": "user", "content": "ping"}], 16)
+        return self.chat("Reply with the single word OK.", [{"role": "user", "content": "ping"}], 2048)
 
 
 SYSTEM = """You design electronic schematics for KiCad. You do NOT draw: you only list parts and connections.

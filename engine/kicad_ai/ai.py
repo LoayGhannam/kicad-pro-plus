@@ -355,6 +355,12 @@ def autofix(intent, library):
             m = re.match(r"Conn_0([12])x(\d+)", c.get("symbol", "").split(":")[-1])
             if pick is None and m:
                 pick = "Connector_PinHeader_2.54mm:PinHeader_%sx%s_P2.54mm_Vertical" % (m.group(1), m.group(2))
+            if pick is None and c.get("symbol") == "Device:LED" and "SMD" not in (fp or ""):
+                # "LED_5mm_Red", "LED_3mm" ... -> the standard round THT LED of that size
+                dm = re.search(r"(\d+(?:\.\d)?)\s*mm", fp or "")
+                cand = "LED_THT:LED_D%.1fmm" % float(dm.group(1)) if dm else "LED_THT:LED_D5.0mm"
+                if _find_fp(fps, cand):
+                    pick = cand
             if pick is None and fp and ":" in fp:
                 lib, name = fp.split(":", 1)
                 key = [k for k in re.split(r"[_-]", name) if k][:2]

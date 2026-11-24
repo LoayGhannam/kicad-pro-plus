@@ -130,6 +130,10 @@ class Provider:
                         self.progress("free-tier limit: waiting %ds, then continuing..." % (end - time.time() + 0.5))
                     time.sleep(min(1.0, max(0.0, end - time.time())))
                 return self._post(url, body, headers, _waited + wait)
+            if e.code == 413 and "per minute" in detail:
+                raise AIError("%s: this design is too big for the free plan's per-minute limit. "
+                              "Try a smaller request, or a provider with bigger limits (gemini). (%s)"
+                              % (self.name, detail[:160]))
             raise AIError("%s returned HTTP %d: %s" % (self.name, e.code, detail))
         except urllib.error.URLError as e:
             raise AIError("cannot reach %s at %s (%s)" % (self.name, self.base_url, e.reason))
@@ -296,6 +300,36 @@ def _find_fp(fps, fp):
     return any(os.path.exists(os.path.join(d, lib + ".pretty", name + ".kicad_mod")) for d in fps)
 
 
+_PIN_ALIASES = {"vout": ["vo", "out", "output"], "vin": ["vi", "in", "input"], "out": ["vo", "vout"],
+                "in": ["vi", "vin"], "en": ["chip_en", "ce", "enable"], "rst": ["reset", "nrst", "chip_en", "en"],
+                "reset": ["rst", "nrst", "chip_en", "en"], "vdd": ["vcc"], "vcc": ["vdd"],
+                "vdd33": ["vdd3p3", "vdd3v3", "3v3"], "3v3": ["vdd3p3", "vdd33", "vdd3v3"],
+                "dp": ["d+"], "dm": ["d-"], "usb_dp": ["d+"], "usb_dm": ["d-"], "gnd": ["vss", "ep"]}
+
+
+def _pins_by_name(sym, name):
+    """A pin name the model used that is not unique or not exact: 'GND' on a USB-C connector
+    (four GND pins), 'D+' (A6 and B6), 'VOUT' for AMS1117's 'VO', 'EN' for 'CHIP_EN', 'IO9' for 'GPIO9'.
+    Returns every matching pin number (all of them must go on the same net), or []."""
+    clean = lambda n: str(n).replace("~{", "").replace("}", "").replace("~", "").lower()
+    want = clean(name)
+    cands = [want] + _PIN_ALIASES.get(want, [])
+    m = re.match(r"^(?:io|gpio|p)(\d+)$", want)
+    if m:
+        cands.append("gpio" + m.group(1))
+    for w in cands:
+        hit = [p.number for p in sym.pins if clean(p.name) == w]
+        if hit:
+            return hit
+    # family of supply pins: 'VDD3P3' also covers VDD3P3_RTC / VDD3P3_CPU when no exact pin exists
+    for w in cands:
+        if len(w) >= 3 and w.startswith("vdd"):
+            hit = [p.number for p in sym.pins if clean(p.name).startswith(w)]
+            if hit:
+                return hit
+    return []
+
+
 def autofix(intent, library):
     """Fix the mechanical mistakes ourselves instead of spending a whole model round trip.
     Returns a list of what was changed."""
@@ -366,8 +400,13 @@ def autofix(intent, library):
                 try:
                     pin = syms[ref].pin(pin).number
                 except KeyError:
-                    pass
-            out.append("%s.%s" % (ref, pin))
+                    many = _pins_by_name(syms[ref], pin)
+                    if many:
+                        fixes.append("%s.%s -> %s" % (ref, pin, ", ".join("%s.%s" % (ref, q) for q in many)))
+                        out += ["%s.%s" % (ref, q) for q in many if "%s.%s" % (ref, q) not in out]
+                        continue
+            if "%s.%s" % (ref, pin) not in out:
+                out.append("%s.%s" % (ref, pin))
         n["pins"] = out
     fps = _footprint_dirs()
     if fps:
@@ -423,7 +462,7 @@ def autofix(intent, library):
                     m2 = difflib.get_close_matches(fp, pool, n=1, cutoff=0.5)
                     pick = m2[0] if m2 else None
                 if pick is None:
-                    thru = "THT" in (fp or "")
+                    thru = "THT" in (fp or "") or (c.get("symbol") == "Switch:SW_Push" and "SMD" not in (fp or ""))
                     sid = c.get("symbol", "")
                     defaults = {"Device:LED": ("LED_THT:LED_D5.0mm", "LED_SMD:LED_0805_2012Metric"),
                                 "Device:R": ("Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal",
@@ -431,7 +470,13 @@ def autofix(intent, library):
                                 "Device:C": ("Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm",
                                              "Capacitor_SMD:C_0805_2012Metric"),
                                 "Device:C_Polarized": ("Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
-                                                       "Capacitor_SMD:CP_Elec_5x5.4")}
+                                                       "Capacitor_SMD:CP_Elec_5x5.4"),
+                                "Switch:SW_Push": ("Button_Switch_THT:SW_PUSH_6mm",
+                                                   "Button_Switch_SMD:SW_SPST_PTS645"),
+                                "Device:D": ("Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal",
+                                             "Diode_SMD:D_SOD-123"),
+                                "Device:L": ("Inductor_THT:L_Axial_L5.3mm_D2.2mm_P10.16mm_Horizontal",
+                                             "Inductor_SMD:L_0805_2012Metric")}
                     if sid in defaults:
                         cand = defaults[sid][0 if thru else 1]
                         if _find_fp(fps, cand):
@@ -556,6 +601,10 @@ def design(request, out_path, cfg=None, library=None, max_tries=6, log=print, pr
     last_err = None
     for attempt in range(1, max_tries + 1):
         log("[%s/%s] asking %s (%s)..." % (attempt, max_tries, prov.name, prov.model))
+        if len(messages) > 3:
+            # only the request, the latest (auto-fixed) design and the latest errors matter;
+            # resending every old attempt wastes tokens and breaks free-tier per-minute limits
+            messages = [messages[0]] + messages[-2:]
         try:
             reply = prov.chat(SYSTEM, messages)
         except AIError as e:

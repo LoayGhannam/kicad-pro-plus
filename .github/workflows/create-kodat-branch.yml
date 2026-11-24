@@ -1,0 +1,38 @@
+name: create kodat branch
+
+# One-off: copies upstream KiCad (tag in ci/KICAD_VERSION) into this repo as the
+# branch `kodat`, GitHub-to-GitHub. All KODAT PCB source changes are then normal
+# commits on that branch.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: self
+      - name: Copy KiCad tag into branch kodat
+        run: |
+          set -e
+          TAG=$(tr -d '[:space:]' < self/ci/KICAD_VERSION)
+          git clone --depth 1 --branch "$TAG" https://github.com/KiCad/kicad-source-mirror kicad
+          cd kicad
+          REMOTE="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          if git ls-remote --exit-code --heads "$REMOTE" kodat; then
+            echo "branch kodat already exists, not overwriting"; exit 0
+          fi
+          # a shallow clone cannot be pushed to a repo without its history:
+          # start a fresh single-commit history from the tagged tree instead
+          rm -rf .git
+          git init -q -b kodat
+          git config user.name "kodat-pcb ci"
+          git config user.email "ci@kodat-pcb"
+          git add -A
+          git commit -q -m "Upstream KiCad $TAG (https://gitlab.com/kicad/code/kicad, tag $TAG)"
+          git push "$REMOTE" kodat

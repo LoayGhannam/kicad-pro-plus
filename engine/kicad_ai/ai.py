@@ -26,7 +26,7 @@ PRESETS = {
                  "model": "gpt-4.1", "key_env": "OPENAI_API_KEY"},
     "deepseek": {"kind": "openai", "base_url": "https://api.deepseek.com/v1",
                  "model": "deepseek-chat", "key_env": "DEEPSEEK_API_KEY"},
-    "ollama":   {"kind": "openai", "base_url": "http://localhost:11434/v1",
+    "ollama":   {"kind": "ollama", "base_url": "http://localhost:11434",
                  "model": "qwen2.5:7b", "key_env": None},
     "custom":   {"kind": "openai", "base_url": "", "model": "", "key_env": "AI_API_KEY"},
 }
@@ -70,7 +70,9 @@ class Provider:
         self.base_url = (cfg.get("base_url") or p["base_url"]).rstrip("/")
         self.model = cfg.get("model") or p["model"]
         self.api_key = cfg.get("api_key") or (os.environ.get(p["key_env"]) if p["key_env"] else None)
-        self.timeout = float(cfg.get("timeout", 900))   # big local models can be slow
+        self.timeout = float(cfg.get("timeout", 900))
+        self.num_ctx = cfg.get("num_ctx", 16384)        # Ollama context window
+        self.think = cfg.get("think", "medium")          # gpt-oss thinking effort: low/medium/high   # big local models can be slow
         if not self.base_url:
             raise AIError("provider 'custom' needs base_url")
         if not self.model:
@@ -98,6 +100,20 @@ class Provider:
                                "system": system, "messages": messages},
                               {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"})
             return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        if self.kind == "ollama":
+            # native API: lets us raise the context window (Ollama's default is small, and a
+            # thinking model can fill it before writing the answer) and cap thinking effort
+            root = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+            body = {"model": self.model, "stream": False,
+                    "messages": [{"role": "system", "content": system}] + messages,
+                    "options": {"num_ctx": int(self.num_ctx), "num_predict": max_tokens, "temperature": 0.2}}
+            if self.model.startswith("gpt-oss"):
+                body["think"] = self.think
+            data = self._post(root + "/api/chat", body, {})
+            text = (data.get("message") or {}).get("content") or ""
+            if not text.strip():
+                raise AIError("%s returned an empty answer (it used its whole budget thinking)" % self.model)
+            return text
         headers = {"authorization": "Bearer " + self.api_key} if self.api_key else {}
         data = self._post(self.base_url + "/chat/completions",
                           {"model": self.model, "max_tokens": max_tokens, "temperature": 0.2,
@@ -224,7 +240,18 @@ def design(request, out_path, cfg=None, library=None, max_tries=4, log=print):
     last_err = None
     for attempt in range(1, max_tries + 1):
         log("[%s/%s] asking %s (%s)..." % (attempt, max_tries, prov.name, prov.model))
-        reply = prov.chat(SYSTEM, messages)
+        try:
+            reply = prov.chat(SYSTEM, messages)
+        except AIError as e:
+            if "empty answer" not in str(e):
+                raise
+            last_err = str(e)
+            log("    " + last_err + ", asking again with less thinking")
+            if getattr(prov, "think", None) == "high":
+                prov.think = "medium"
+            elif getattr(prov, "think", None) == "medium":
+                prov.think = "low"
+            continue
         messages.append({"role": "assistant", "content": reply})
         try:
             intent = _extract_json(reply)

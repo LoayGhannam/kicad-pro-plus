@@ -1,6 +1,6 @@
 name: windows build
 
-# Builds KiCad Pro+ for Windows: upstream KiCad (tag in ci/KICAD_VERSION) + patches/*.patch.
+# Builds KODAT PCB for Windows from the `kodat` branch (upstream KiCad tag in ci/KICAD_VERSION + our commits).
 #
 # Two jobs:
 #   deps   builds KiCad's vcpkg dependencies into a binary cache. It is *resumable*:
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["patches/**", "ci/**", ".github/workflows/windows-build.yml"]
+    paths: ["ci/**", ".github/workflows/windows-build.yml"]
 
 concurrency:
   group: windows-build
@@ -124,19 +124,11 @@ jobs:
           "VCPKG_DEFAULT_BINARY_CACHE=$w\bincache" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Force "$w\bincache" | Out-Null
 
-      - name: Fetch KiCad source and apply KiCad Pro+ patches
+      - name: Fetch KODAT PCB source (branch kodat of this repo)
         shell: pwsh
         run: |
-          $tag = (Get-Content ci/KICAD_VERSION).Trim()
-          git clone --depth 1 --branch $tag https://github.com/KiCad/kicad-source-mirror "$env:W\kicad"
-          git -C "$env:W\kicad" config user.email "ci@kicad-pro-plus"
-          git -C "$env:W\kicad" config user.name "kicad-pro-plus ci"
-          $patches = Get-ChildItem patches -Filter *.patch | Sort-Object Name
-          foreach ($p in $patches) {
-            "Applying $($p.Name)"
-            git -C "$env:W\kicad" am --3way $p.FullName
-            if ($LASTEXITCODE -ne 0) { throw "patch $($p.Name) failed" }
-          }
+          git clone --depth 1 --branch kodat "https://github.com/${{ github.repository }}" "$env:W\kicad"
+          git -C "$env:W\kicad" log --oneline -3
 
       - name: Restore dependency cache
         uses: actions/cache/restore@v4
@@ -174,7 +166,7 @@ jobs:
             -DKICAD_BUILD_I18N=OFF `
             -DKICAD_USE_SENTRY=OFF `
             -DKICAD_UPDATE_CHECK=OFF `
-            -DCMAKE_INSTALL_PREFIX="$env:W\KiCadProPlus"
+            -DCMAKE_INSTALL_PREFIX="$env:W\KODAT-PCB"
 
       - name: Build
         shell: pwsh
@@ -187,15 +179,15 @@ jobs:
         shell: pwsh
         run: |
           cmake --install "$env:W\b"
-          $bin = "$env:W\KiCadProPlus\bin"
+          $bin = "$env:W\KODAT-PCB\bin"
           Get-ChildItem "$env:W\vi\x64-windows\bin" -Filter *.dll | Copy-Item -Destination $bin -Force
           if (Test-Path "$env:W\vi\x64-windows\tools\python3") {
             Copy-Item "$env:W\vi\x64-windows\tools\python3\*" -Destination $bin -Recurse -Force
           }
-          Copy-Item -Recurse engine "$env:W\KiCadProPlus\engine"
-          Copy-Item ci\KiCadProPlus.cmd "$env:W\KiCadProPlus\KiCadProPlus.cmd"
-          Compress-Archive -Path "$env:W\KiCadProPlus\*" -DestinationPath "$env:W\KiCadProPlus-win64.zip" -CompressionLevel Optimal
-          "ZIP=$env:W\KiCadProPlus-win64.zip" >> $env:GITHUB_ENV
+          Copy-Item -Recurse engine "$env:W\KODAT-PCB\engine"
+          Copy-Item ci\KODAT-PCB.cmd "$env:W\KODAT-PCB\KODAT-PCB.cmd"
+          Compress-Archive -Path "$env:W\KODAT-PCB\*" -DestinationPath "$env:W\KODAT-PCB-win64.zip" -CompressionLevel Optimal
+          "ZIP=$env:W\KODAT-PCB-win64.zip" >> $env:GITHUB_ENV
 
       - name: Publish pre-release
         shell: pwsh
@@ -203,5 +195,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "build-$env:GITHUB_RUN_NUMBER"
-          gh release create $tag "$env:ZIP" --prerelease --title "KiCad Pro+ build $env:GITHUB_RUN_NUMBER" `
-            --notes "Portable build of KiCad $(Get-Content ci/KICAD_VERSION) + KiCad Pro+ patches. Unzip anywhere and run KiCadProPlus.cmd."
+          gh release create $tag "$env:ZIP" --prerelease --title "KODAT PCB build $env:GITHUB_RUN_NUMBER" `
+            --notes "Portable KODAT PCB (based on KiCad $(Get-Content ci/KICAD_VERSION)). Unzip anywhere and run KODAT-PCB.cmd."

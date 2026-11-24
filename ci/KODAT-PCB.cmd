@@ -1,10 +1,10 @@
 @echo off
-rem KiCad Pro+ portable launcher.
+rem KODAT PCB portable launcher.
 rem Keeps its own settings (so your normal KiCad is never touched) and reuses the
 rem libraries of an existing KiCad 10 install when one is found.
 setlocal
 set "HERE=%~dp0"
-set "KICAD_CONFIG_HOME=%APPDATA%\kicad-pro-plus"
+set "KICAD_CONFIG_HOME=%APPDATA%\kodat-pcb"
 
 set "LIBROOT="
 for %%D in ("D:\programs\kicad\share\kicad" "C:\Program Files\KiCad\10.0\share\kicad") do (

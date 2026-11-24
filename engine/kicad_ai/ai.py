@@ -280,6 +280,23 @@ def autofix(intent, library):
     for c in comps:
         try:
             syms[c["ref"]] = library.get(c["symbol"])
+        except KeyError:
+            import difflib
+            sym = c.get("symbol", "")
+            if sym.count(":") != 1:
+                continue
+            lib, name = sym.split(":")
+            try:
+                near = difflib.get_close_matches(name, library.names(lib), n=1, cutoff=0.85)
+            except KeyError:
+                near = []
+            if near:
+                c["symbol"] = lib + ":" + near[0]
+                fixes.append("%s symbol %s -> %s" % (c["ref"], sym, c["symbol"]))
+                try:
+                    syms[c["ref"]] = library.get(c["symbol"])
+                except KeyError:
+                    pass
         except Exception:
             pass
     for n in intent.get("nets", []):
@@ -319,6 +336,31 @@ def autofix(intent, library):
                         cands.sort(key=lambda f: ("HandSolder" in f, len(f)))
                         if cands:
                             pick = lib + ":" + cands[0]; break
+            if pick is None:
+                import difflib
+                lib, name = (fp.split(":", 1) + [""])[:2] if fp and ":" in fp else ("", fp or "")
+                pool = []
+                for d in fps:
+                    pd = os.path.join(d, lib + ".pretty") if lib else ""
+                    if lib and os.path.isdir(pd):
+                        pool += [lib + ":" + f[:-10] for f in os.listdir(pd) if f.endswith(".kicad_mod")]
+                if pool:
+                    m2 = difflib.get_close_matches(fp, pool, n=1, cutoff=0.5)
+                    pick = m2[0] if m2 else None
+                if pick is None:
+                    thru = "THT" in (fp or "")
+                    sid = c.get("symbol", "")
+                    defaults = {"Device:LED": ("LED_THT:LED_D5.0mm", "LED_SMD:LED_0805_2012Metric"),
+                                "Device:R": ("Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal",
+                                             "Resistor_SMD:R_0805_2012Metric"),
+                                "Device:C": ("Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm",
+                                             "Capacitor_SMD:C_0805_2012Metric"),
+                                "Device:C_Polarized": ("Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+                                                       "Capacitor_SMD:CP_Elec_5x5.4")}
+                    if sid in defaults:
+                        cand = defaults[sid][0 if thru else 1]
+                        if _find_fp(fps, cand):
+                            pick = cand
             if pick and (not fp or not (":" in fp and _find_fp(fps, fp))):
                 fixes.append("%s footprint %s -> %s" % (c["ref"], fp or "(none)", pick))
                 c["footprint"] = pick

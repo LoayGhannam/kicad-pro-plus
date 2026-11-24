@@ -299,6 +299,9 @@ def lint(intent, library):
             except Exception:
                 pass
     fps = _footprint_dirs()
+    is_gnd = lambda n: bool(n) and (n.upper().startswith("GND") or n.upper() in ("VSS", "0V", "EARTH"))
+    power_like = {n["name"] for n in intent.get("nets", [])
+                  if re.match(r"^(\+|-)?\d|^V(CC|DD|IN|BAT|BUS)|^\+", n["name"].upper())}
     for c in intent.get("components", []):
         ref = c.get("ref", "")
         if not re.match(r"^[A-Z]+[0-9]+$", ref):
@@ -321,6 +324,42 @@ def lint(intent, library):
                 if p.etype in ("input", "power_in") and p.name.upper() not in ("NC", "N.C.") and not connected(p):
                     probs.append("%s pin %s (%s) is an %s and is left unconnected; tie it as the datasheet says (write it as %s.%s)"
                                  % (ref, p.number, p.name, p.etype, ref, p.number))
+        # --- electrical sense ------------------------------------------------
+        def net_of(p):
+            return used.get("%s.%s" % (ref, p.number)) or used.get("%s.%s" % (ref, p.name))
+        for p in pins:
+            n = net_of(p)
+            if not n:
+                continue
+            nm = p.name.upper()
+            active_low = "~" in p.name
+            core = nm.replace("~{", "").replace("}", "").replace("~", "")
+            if active_low and any(k in core for k in ("RST", "RESET", "MR", "CLR")) and is_gnd(n):
+                probs.append("%s pin %s (%s) is an active-low reset tied to %s: the chip would stay in reset "
+                             "forever. Tie it to the supply (or through a pull-up)" % (ref, p.number, core, n))
+            if p.etype == "power_in" and core in ("VCC", "VDD", "V+", "VIN") and is_gnd(n):
+                probs.append("%s supply pin %s (%s) is on %s" % (ref, p.number, core, n))
+            if p.etype == "power_in" and core in ("GND", "VSS", "V-") and not is_gnd(n) and n in power_like:
+                probs.append("%s ground pin %s (%s) is on %s" % (ref, p.number, core, n))
+        if sym.lib_id.split(":")[1].upper().startswith("LED") or sym.lib_id == "Device:LED":
+            pa = next((p for p in pins if p.name.upper() in ("A", "ANODE")), None)
+            pk = next((p for p in pins if p.name.upper() in ("K", "CATHODE")), None)
+            if pa and pk:
+                na, nk = net_of(pa), net_of(pk)
+                if na and is_gnd(na):
+                    probs.append("%s is reversed: its anode (pin %s) is on %s. Anode goes toward the supply/driver, "
+                                 "cathode (pin %s) toward ground" % (ref, pa.number, na, pk.number))
+                if na and nk:
+                    series = False
+                    for r in intent.get("components", []):
+                        if not r.get("symbol", "").startswith("Device:R"):
+                            continue
+                        rn = {used.get("%s.1" % r["ref"]), used.get("%s.2" % r["ref"])}
+                        if (na in rn or nk in rn) and not ({na, nk} <= rn):
+                            series = True
+                    if not series:
+                        probs.append("%s has no series current-limiting resistor (a resistor across the LED, between "
+                                     "the same two nets, does not limit current)" % ref)
         fp = c.get("footprint", "")
         if fps and fp:
             if ":" not in fp:

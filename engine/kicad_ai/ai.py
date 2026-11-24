@@ -207,6 +207,22 @@ def autofix(intent, library):
     Returns a list of what was changed."""
     fixes = []
     comps = intent.get("components", [])
+    fp_as_sym = {"Resistor_SMD": "Device:R", "Resistor_THT": "Device:R", "Capacitor_SMD": "Device:C",
+                 "Capacitor_THT": "Device:C", "Capacitor_Tantalum_SMD": "Device:C_Polarized",
+                 "LED_SMD": "Device:LED", "LED_THT": "Device:LED", "Diode_SMD": "Device:D", "Diode_THT": "Device:D",
+                 "Inductor_SMD": "Device:L", "Inductor_THT": "Device:L", "Crystal": "Device:Crystal"}
+    for c in comps:
+        sym = c.get("symbol", "")
+        lib = sym.split(":")[0]
+        if lib in fp_as_sym:
+            if not c.get("footprint"):
+                c["footprint"] = sym
+            c["symbol"] = fp_as_sym[lib]
+            if "Polarized" not in c["symbol"] and lib.startswith("Capacitor") and \
+                    re.search(r"(\d+(\.\d+)?)\s*[uµ]F", str(c.get("value", ""))) and \
+                    float(re.search(r"(\d+(\.\d+)?)", str(c.get("value"))).group(1)) >= 10:
+                c["symbol"] = "Device:C_Polarized"
+            fixes.append("%s symbol %s -> %s (that was a footprint library)" % (c.get("ref"), sym, c["symbol"]))
     taken = {c.get("ref", "") for c in comps}
     rename = {}
     for c in comps:
@@ -324,7 +340,7 @@ def lint(intent, library):
     return probs
 
 
-def design(request, out_path, cfg=None, library=None, max_tries=4, log=print):
+def design(request, out_path, cfg=None, library=None, max_tries=6, log=print):
     """request -> verified .kicad_sch at out_path. Returns (intent, report)."""
     from .engine import IntentError
     from . import build
@@ -355,13 +371,19 @@ def design(request, out_path, cfg=None, library=None, max_tries=4, log=print):
             continue
         from .library import Library
         library = library or Library()
-        for f in autofix(intent, library):
+        fixed = autofix(intent, library)
+        for f in fixed:
             log("    auto-fixed: " + f)
+        if fixed:
+            # let the model continue from the corrected design, not repeat its old mistakes
+            messages[-1] = {"role": "assistant", "content": json.dumps(intent, ensure_ascii=False)}
         problems = lint(intent, library)
         if problems:
             last_err = "; ".join(problems[:8])
             log("    design check failed: " + last_err)
-            messages.append({"role": "user", "content": "ERROR: design problems: " + last_err})
+            messages.append({"role": "user", "content": "ERROR: design problems in your JSON above: " + last_err +
+                             ". Keep everything else exactly as it is (same refs), fix only these, and reply "
+                             "with the full JSON."})
             continue
         try:
             sch, rep = build(intent, out_path, library)

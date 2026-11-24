@@ -16,6 +16,7 @@ from your libraries, is sent back and the model gets another try.
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -72,7 +73,8 @@ class Provider:
         self.api_key = cfg.get("api_key") or (os.environ.get(p["key_env"]) if p["key_env"] else None)
         self.timeout = float(cfg.get("timeout", 900))
         self.num_ctx = cfg.get("num_ctx", 32768)        # Ollama context window
-        self.think = cfg.get("think", "medium")          # gpt-oss thinking effort: low/medium/high   # big local models can be slow
+        self.think = cfg.get("think", "medium")          # gpt-oss: low/medium/high; others: on/off
+        self.progress = None                              # callback(str) for live status   # big local models can be slow
         if not self.base_url:
             raise AIError("provider 'custom' needs base_url")
         if not self.model:
@@ -92,6 +94,39 @@ class Provider:
         except urllib.error.URLError as e:
             raise AIError("cannot reach %s at %s (%s)" % (self.name, self.base_url, e.reason))
 
+    def _stream_ollama(self, url, body):
+        """Stream so a long answer never hits the timeout, and report live progress."""
+        body = dict(body, stream=True)
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                     headers={"content-type": "application/json"})
+        parts, n_think, n_text, t0, last = [], 0, 0, time.time(), 0
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                for line in r:
+                    if not line.strip():
+                        continue
+                    d = json.loads(line.decode("utf-8"))
+                    if d.get("error"):
+                        raise AIError("ollama: %s" % d["error"])
+                    m = d.get("message") or {}
+                    if m.get("thinking"):
+                        n_think += 1
+                    if m.get("content"):
+                        parts.append(m["content"]); n_text += 1
+                    now = time.time()
+                    if self.progress and now - last > 2:
+                        last = now
+                        rate = (n_think + n_text) / max(now - t0, 0.1)
+                        what = "writing the design" if n_text else ("thinking" if n_think else "loading model")
+                        self.progress("%s... %d tokens (%.1f tokens/s)" % (what, n_think + n_text, rate))
+                    if d.get("done"):
+                        break
+        except urllib.error.HTTPError as e:
+            raise AIError("ollama returned HTTP %d: %s" % (e.code, e.read().decode("utf-8", "replace")[:300]))
+        except urllib.error.URLError as e:
+            raise AIError("cannot reach ollama at %s (%s)" % (self.base_url, e.reason))
+        return "".join(parts)
+
     def chat(self, system, messages, max_tokens=16384):
         """messages: [{"role": "user"|"assistant", "content": str}] -> reply text"""
         if self.kind == "anthropic":
@@ -109,8 +144,15 @@ class Provider:
                     "options": {"num_ctx": int(self.num_ctx), "num_predict": max_tokens, "temperature": 0.2}}
             if self.model.startswith("gpt-oss"):
                 body["think"] = self.think
-            data = self._post(root + "/api/chat", body, {})
-            text = (data.get("message") or {}).get("content") or ""
+            elif self.think in (True, False, "on", "off"):
+                body["think"] = self.think in (True, "on")
+            else:
+                # qwen3 / deepseek-r1 / others: thinking off by default, big local models
+                # are too slow on a laptop GPU when they think for thousands of tokens
+                body["think"] = False if re.match(r"(qwen3|deepseek-r1|magistral)", self.model) else None
+                if body["think"] is None:
+                    del body["think"]
+            text = self._stream_ollama(root + "/api/chat", body)
             if not text.strip():
                 raise AIError("%s returned an empty answer (it used its whole budget thinking)" % self.model)
             return text
@@ -379,12 +421,13 @@ def lint(intent, library):
     return probs
 
 
-def design(request, out_path, cfg=None, library=None, max_tries=6, log=print):
+def design(request, out_path, cfg=None, library=None, max_tries=6, log=print, progress=None):
     """request -> verified .kicad_sch at out_path. Returns (intent, report)."""
     from .engine import IntentError
     from . import build
 
     prov = Provider(cfg or load_config())
+    prov.progress = progress
     messages = [{"role": "user", "content": request}]
     last_err = None
     for attempt in range(1, max_tries + 1):
@@ -400,6 +443,8 @@ def design(request, out_path, cfg=None, library=None, max_tries=6, log=print):
                 prov.think = "medium"
             elif getattr(prov, "think", None) == "medium":
                 prov.think = "low"
+            else:
+                prov.think = "off"
             continue
         messages.append({"role": "assistant", "content": reply})
         try:

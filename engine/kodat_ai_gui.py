@@ -141,6 +141,12 @@ class DesignPage(wx.Panel):
         self.who.SetLabel("AI: %s / %s" % (c.get("provider", "?"), c.get("model") or ai.PRESETS.get(c.get("provider", ""), {}).get("model", "?")))
         self.Layout()
 
+    def prog(self, text):
+        def upd():
+            if self.status.state == "busy":
+                self.status.msg.SetLabel(self.status.msg.GetLabel().split("  |")[0] + "  |  " + text)
+        wx.CallAfter(upd)
+
     def say(self, line):
         wx.CallAfter(self._say, line)
 
@@ -185,7 +191,7 @@ class DesignPage(wx.Panel):
                     raise ai.AIError("Ollama is not running. Start the Ollama app and try again.")
             intent, rep = ai.design(text, out, {"provider": prov.name, "model": prov.model,
                                                 "base_url": prov.base_url, "api_key": prov.api_key},
-                                    log=self.say)
+                                    log=self.say, progress=self.prog)
             proj = os.path.splitext(out)[0] + ".kicad_pro"
             with open(proj, "w") as f:
                 json.dump({"meta": {"filename": os.path.basename(proj), "version": 1}}, f)

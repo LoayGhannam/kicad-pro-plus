@@ -11,7 +11,7 @@ engine and an Eagle-style UI.
 ## البنية
 | الفولدر | شو فيه |
 |---|---|
-| `engine/` | محرّك الرسم والفاحص (Python). بيشتغل لحاله أو من جوّا KiCad Pro+ |
+| `engine/` | محرّك الرسم والفاحص (Python). بيشتغل لحاله أو من جوّا KODAT PCB |
 | فرع `kodat` | كود KiCad 10.0.5 الرسمي + تعديلات KODAT PCB كـ commits |
 | `ci/` | رقم نسخة KiCad الأساس والـ launcher |
 | `.github/workflows/` | `engine tests` (Linux) و`windows build` (بيطلّع نسخة portable) |

@@ -165,8 +165,9 @@ class LibSymbol:
         for p in self.pins:
             if p.number == number:
                 return p
-        # allow pins by name too (e.g. 'Shield', 'VCC') when the name is unique
-        named = [p for p in self.pins if p.name.lower() == str(number).lower()]
+        # allow pins by name too (e.g. 'Shield', 'VCC', 'RST' for '~{RST}') when unique
+        clean = lambda n: str(n).replace("~{", "").replace("}", "").replace("~", "").lower()
+        named = [p for p in self.pins if clean(p.name) == clean(number)]
         if len(named) == 1:
             return named[0]
         have = ", ".join("%s(%s)" % (p.number, p.name) for p in self.pins)
@@ -199,11 +200,17 @@ class Library:
                 raise KeyError("Symbol library '%s' not found in %s" % (lib, self.dirs))
         return self._files[lib]
 
+    def names(self, lib):
+        return [e[1] for e in self._load(lib)[1:] if _is(e, "symbol")]
+
     def _raw(self, lib, name):
         for e in self._load(lib)[1:]:
             if _is(e, "symbol") and e[1] == name:
                 return e
-        raise KeyError("Symbol '%s' not found in library '%s'" % (name, lib))
+        import difflib
+        near = difflib.get_close_matches(name, self.names(lib), n=6, cutoff=0.4)
+        raise KeyError("Symbol '%s' not found in library '%s'%s" % (
+            name, lib, (". Close matches: " + ", ".join(near)) if near else ""))
 
     def get(self, lib_id):
         if lib_id in self._cache:

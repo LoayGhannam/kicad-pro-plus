@@ -181,13 +181,107 @@ def _footprint_dirs():
     return [d for d in dirs if os.path.isdir(d)]
 
 
+def _prefix(lib_id):
+    lib, name = lib_id.split(":", 1)
+    n = name.upper()
+    if lib == "Device":
+        for pre, keys in (("D", ("LED", "D_", "D")), ("R", ("R",)), ("C", ("C",)), ("L", ("L",)),
+                          ("Q", ("Q_",)), ("Y", ("CRYSTAL", "RESONATOR")), ("F", ("FUSE",)),
+                          ("LS", ("SPEAKER",)), ("BT", ("BATTERY",))):
+            if any(n == k or n.startswith(k) for k in keys):
+                return pre
+    if lib.startswith("Connector"):
+        return "J"
+    if lib.startswith("Switch"):
+        return "SW"
+    return "U"
+
+
+def _find_fp(fps, fp):
+    lib, name = fp.split(":", 1)
+    return any(os.path.exists(os.path.join(d, lib + ".pretty", name + ".kicad_mod")) for d in fps)
+
+
+def autofix(intent, library):
+    """Fix the mechanical mistakes ourselves instead of spending a whole model round trip.
+    Returns a list of what was changed."""
+    fixes = []
+    comps = intent.get("components", [])
+    taken = {c.get("ref", "") for c in comps}
+    rename = {}
+    for c in comps:
+        ref = c.get("ref", "")
+        if not re.match(r"^[A-Z]+[0-9]+$", ref) and c.get("symbol", "").count(":") == 1:
+            pre = _prefix(c["symbol"]); k = 1
+            while "%s%d" % (pre, k) in taken:
+                k += 1
+            new = "%s%d" % (pre, k); taken.add(new)
+            rename[ref] = new; c["ref"] = new
+            fixes.append("renamed %s -> %s" % (ref, new))
+    syms = {}
+    for c in comps:
+        try:
+            syms[c["ref"]] = library.get(c["symbol"])
+        except Exception:
+            pass
+    for n in intent.get("nets", []):
+        out = []
+        for p in n.get("pins", []):
+            ref, _, pin = p.partition(".")
+            ref = rename.get(ref, ref)
+            if ref in syms:
+                try:
+                    pin = syms[ref].pin(pin).number
+                except KeyError:
+                    pass
+            out.append("%s.%s" % (ref, pin))
+        n["pins"] = out
+    fps = _footprint_dirs()
+    if fps:
+        for c in comps:
+            fp = c.get("footprint", "")
+            if fp and ":" in fp and _find_fp(fps, fp):
+                continue
+            sym = syms.get(c["ref"])
+            pick = None
+            if sym is not None and sym.default_footprint and ":" in sym.default_footprint \
+                    and _find_fp(fps, sym.default_footprint):
+                pick = sym.default_footprint
+            m = re.match(r"Conn_0([12])x(\d+)", c.get("symbol", "").split(":")[-1])
+            if pick is None and m:
+                pick = "Connector_PinHeader_2.54mm:PinHeader_%sx%s_P2.54mm_Vertical" % (m.group(1), m.group(2))
+            if pick is None and fp and ":" in fp:
+                lib, name = fp.split(":", 1)
+                key = [k for k in re.split(r"[_-]", name) if k][:2]
+                for d in fps:
+                    pd = os.path.join(d, lib + ".pretty")
+                    if os.path.isdir(pd):
+                        cands = sorted(f[:-10] for f in os.listdir(pd) if f.endswith(".kicad_mod")
+                                       and all(k.lower() in f.lower() for k in key))
+                        cands.sort(key=lambda f: ("HandSolder" in f, len(f)))
+                        if cands:
+                            pick = lib + ":" + cands[0]; break
+            if pick and (not fp or not (":" in fp and _find_fp(fps, fp))):
+                fixes.append("%s footprint %s -> %s" % (c["ref"], fp or "(none)", pick))
+                c["footprint"] = pick
+    return fixes
+
+
 def lint(intent, library):
     """Design-sense checks the drawing verifier cannot see. Returns a list of problems."""
     probs = []
     used = {}
+    symof = {c.get("ref"): c.get("symbol") for c in intent.get("components", [])}
     for n in intent.get("nets", []):
         for p in n.get("pins", []):
             used[p] = n["name"]
+            ref, _, pin = p.partition(".")
+            try:
+                library.get(symof[ref]).pin(pin)
+            except KeyError as e:
+                probs.append(str(e).strip("'\"") if ref in symof else "net %s uses unknown part %s" % (n["name"], ref))
+            except Exception:
+                pass
     fps = _footprint_dirs()
     for c in intent.get("components", []):
         ref = c.get("ref", "")
@@ -209,8 +303,8 @@ def lint(intent, library):
         else:
             for p in pins:
                 if p.etype in ("input", "power_in") and p.name.upper() not in ("NC", "N.C.") and not connected(p):
-                    probs.append("%s pin %s (%s) is an %s and is left unconnected; tie it as the datasheet says"
-                                 % (ref, p.number, p.name, p.etype))
+                    probs.append("%s pin %s (%s) is an %s and is left unconnected; tie it as the datasheet says (write it as %s.%s)"
+                                 % (ref, p.number, p.name, p.etype, ref, p.number))
         fp = c.get("footprint", "")
         if fps and fp:
             if ":" not in fp:
@@ -260,7 +354,10 @@ def design(request, out_path, cfg=None, library=None, max_tries=4, log=print):
             messages.append({"role": "user", "content": "ERROR: " + last_err})
             continue
         from .library import Library
-        problems = lint(intent, library or Library())
+        library = library or Library()
+        for f in autofix(intent, library):
+            log("    auto-fixed: " + f)
+        problems = lint(intent, library)
         if problems:
             last_err = "; ".join(problems[:8])
             log("    design check failed: " + last_err)

@@ -46,3 +46,17 @@ cd %USERPROFILE%\Documents\KiCad\10.0\kicad_ai
 - قطع الـ decoupling بتنحط كمجموعة لحالها، مش لازقة بالـ IC.
 - بطيء شوي بالدارات الكبيرة (التوزيع بيجرّب كل الأماكن): 15 لـ 60 ثانية للدارات بالأمثلة.
 - الملف بينكتب بصيغة KiCad 7، وKiCad 10 بيفتحه وبيحوّله.
+
+## من كلام لسكيماتك (AI)
+بيشتغل مع Claude أو GPT أو DeepSeek أو Ollama أو أي API بصيغة OpenAI.
+```
+python -m kicad_ai ai-config --provider ollama --model qwen2.5:7b
+python -m kicad_ai ai-config --provider claude --api-key sk-ant-...
+python -m kicad_ai ai-config --provider deepseek --api-key sk-...
+python -m kicad_ai ai-config --provider custom --base-url https://openrouter.ai/api/v1 --model ... --api-key ...
+python -m kicad_ai ai-test
+python -m kicad_ai ai "بدي LED بيرمش بـ NE555 على 9V" out\blinker.kicad_sch
+```
+الإعدادات بتنحفظ بـ `%APPDATA%\kodat-pcb\ai.json` على جهازك بس.
+الـ AI ما بيرسم: بيكتب القطع والتوصيلات، والمحرّك بيرسم، والفاحص بيتأكد.
+إذا غلط (قطعة مش موجودة، pin غلط، فحص فشل) الخطأ بيرجعله مع قائمة الـ pins الحقيقية، وبيعيد المحاولة لحد 4 مرات.

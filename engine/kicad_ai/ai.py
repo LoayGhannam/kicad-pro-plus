@@ -1,0 +1,183 @@
+"""AI layer: turn a request in plain words (Arabic or English) into an intent JSON,
+then let the engine draw it and the verifier check it.
+
+Providers
+---------
+- anthropic : Claude (Anthropic Messages API)
+- openai    : any OpenAI-compatible chat API. Presets: openai, deepseek, ollama,
+              plus "custom" with your own base_url (OpenRouter, LM Studio, Groq, ...)
+
+Only the standard library is used (urllib), so it runs inside KiCad's bundled Python.
+
+The model never draws. It only writes components + nets. If the engine rejects the
+intent (unknown symbol, wrong pin, ...) the exact error, including the real pin list
+from your libraries, is sent back and the model gets another try.
+"""
+import json
+import os
+import re
+import urllib.error
+import urllib.request
+
+PRESETS = {
+    "claude":   {"kind": "anthropic", "base_url": "https://api.anthropic.com",
+                 "model": "claude-sonnet-4-5", "key_env": "ANTHROPIC_API_KEY"},
+    "openai":   {"kind": "openai", "base_url": "https://api.openai.com/v1",
+                 "model": "gpt-4.1", "key_env": "OPENAI_API_KEY"},
+    "deepseek": {"kind": "openai", "base_url": "https://api.deepseek.com/v1",
+                 "model": "deepseek-chat", "key_env": "DEEPSEEK_API_KEY"},
+    "ollama":   {"kind": "openai", "base_url": "http://localhost:11434/v1",
+                 "model": "qwen2.5:7b", "key_env": None},
+    "custom":   {"kind": "openai", "base_url": "", "model": "", "key_env": "AI_API_KEY"},
+}
+
+
+def config_path():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
+    return os.path.join(base, "kodat-pcb", "ai.json")
+
+
+def load_config(path=None):
+    """{"provider": "claude", "model": "...", "base_url": "...", "api_key": "..."}"""
+    path = path or config_path()
+    cfg = {"provider": "ollama"}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            cfg.update(json.load(f))
+    return cfg
+
+
+def save_config(cfg, path=None):
+    path = path or config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    return path
+
+
+class AIError(Exception):
+    pass
+
+
+class Provider:
+    def __init__(self, cfg):
+        name = cfg.get("provider", "ollama")
+        if name not in PRESETS:
+            raise AIError("unknown provider '%s' (use one of: %s)" % (name, ", ".join(PRESETS)))
+        p = dict(PRESETS[name])
+        self.name = name
+        self.kind = p["kind"]
+        self.base_url = (cfg.get("base_url") or p["base_url"]).rstrip("/")
+        self.model = cfg.get("model") or p["model"]
+        self.api_key = cfg.get("api_key") or (os.environ.get(p["key_env"]) if p["key_env"] else None)
+        self.timeout = float(cfg.get("timeout", 180))
+        if not self.base_url:
+            raise AIError("provider 'custom' needs base_url")
+        if not self.model:
+            raise AIError("no model set")
+        if self.kind == "anthropic" and not self.api_key:
+            raise AIError("Claude needs an API key (settings or ANTHROPIC_API_KEY)")
+
+    def _post(self, url, body, headers):
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                     headers=dict(headers, **{"content-type": "application/json"}))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:500]
+            raise AIError("%s returned HTTP %d: %s" % (self.name, e.code, detail))
+        except urllib.error.URLError as e:
+            raise AIError("cannot reach %s at %s (%s)" % (self.name, self.base_url, e.reason))
+
+    def chat(self, system, messages, max_tokens=4096):
+        """messages: [{"role": "user"|"assistant", "content": str}] -> reply text"""
+        if self.kind == "anthropic":
+            data = self._post(self.base_url + "/v1/messages",
+                              {"model": self.model, "max_tokens": max_tokens,
+                               "system": system, "messages": messages},
+                              {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"})
+            return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        headers = {"authorization": "Bearer " + self.api_key} if self.api_key else {}
+        data = self._post(self.base_url + "/chat/completions",
+                          {"model": self.model, "max_tokens": max_tokens, "temperature": 0.2,
+                           "messages": [{"role": "system", "content": system}] + messages},
+                          headers)
+        try:
+            return data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError):
+            raise AIError("unexpected reply from %s: %s" % (self.name, str(data)[:300]))
+
+    def test(self):
+        return self.chat("Reply with the single word OK.", [{"role": "user", "content": "ping"}], 16)
+
+
+SYSTEM = """You design electronic schematics for KiCad. You do NOT draw: you only list parts and connections.
+Reply with ONE JSON object and nothing else (no prose, no markdown fences):
+
+{
+  "title": "short title",
+  "flow": ["J1", "U1", "J2"],
+  "notes": "one or two sentences for the user, in the user's language: what the circuit does and key values",
+  "components": [
+    {"ref": "U1", "symbol": "Library:SymbolName", "value": "NE555P", "footprint": "Library:Footprint"}
+  ],
+  "nets": [
+    {"name": "GND", "pins": ["U1.1", "C1.2"]}
+  ]
+}
+
+Rules:
+- "symbol" must be a real symbol from the standard KiCad 10 libraries (e.g. Device:R, Device:C, Device:C_Polarized,
+  Device:LED, Device:R_Potentiometer, Timer:NE555P, Amplifier_Operational:LM358, Regulator_Linear:AMS1117-3.3,
+  Connector_Generic:Conn_01x02, Connector:USB_C_Receptacle_USB2.0_16P ...).
+- Pins are "REF.PIN" using the symbol's pin NUMBER (pin names are accepted when unique).
+- Every pin appears in at most one net. Unused pins: leave them out (they get a no-connect flag).
+- Power nets: use KiCad power names (GND, +5V, +3V3, +9V, +12V, VCC ...) so power symbols are drawn.
+- Add the decoupling capacitors and pull-ups a careful engineer would add. Choose sensible footprints.
+- Use values and topology from the part's datasheet typical application.
+- "flow" lists the main signal path from input to output (optional).
+If you receive an ERROR message, fix exactly that problem and reply with the full corrected JSON."""
+
+
+def _extract_json(text):
+    t = text.strip()
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
+    a, b = t.find("{"), t.rfind("}")
+    if a < 0 or b < a:
+        raise AIError("the model did not return JSON")
+    return json.loads(t[a:b + 1])
+
+
+def design(request, out_path, cfg=None, library=None, max_tries=4, log=print):
+    """request -> verified .kicad_sch at out_path. Returns (intent, report)."""
+    from .engine import IntentError
+    from . import build
+
+    prov = Provider(cfg or load_config())
+    messages = [{"role": "user", "content": request}]
+    last_err = None
+    for attempt in range(1, max_tries + 1):
+        log("[%s/%s] asking %s (%s)..." % (attempt, max_tries, prov.name, prov.model))
+        reply = prov.chat(SYSTEM, messages)
+        messages.append({"role": "assistant", "content": reply})
+        try:
+            intent = _extract_json(reply)
+        except (AIError, ValueError) as e:
+            last_err = "Your reply was not valid JSON (%s). Reply with the JSON object only." % e
+            messages.append({"role": "user", "content": "ERROR: " + last_err})
+            continue
+        try:
+            sch, rep = build(intent, out_path, library)
+        except IntentError as e:
+            last_err = str(e)
+            log("    engine rejected it: " + last_err)
+            messages.append({"role": "user", "content": "ERROR: " + last_err})
+            continue
+        if not rep.ok:
+            last_err = "; ".join(rep.errors[:6])
+            log("    verifier failed: " + last_err)
+            messages.append({"role": "user", "content": "ERROR: the drawn schematic failed checks: " + last_err})
+            continue
+        return intent, rep
+    raise AIError("no valid design after %d tries. Last problem: %s" % (max_tries, last_err))

@@ -139,6 +139,11 @@ Rules:
 - Power nets: use KiCad power names (GND, +5V, +3V3, +9V, +12V, VCC ...) so power symbols are drawn.
 - Add the decoupling capacitors and pull-ups a careful engineer would add. Choose sensible footprints.
 - Use values and topology from the part's datasheet typical application.
+- refs are letters + number only: R1, C3, D1, U1, J1, Q1 (never "LED", "Cdec", "Rled").
+- Every pin of a resistor, capacitor, LED or diode must be in a net. IC inputs (reset, enable, control)
+  must be tied as the datasheet says, never left floating. Include the power input connector.
+- Footprints must be exact KiCad 10 names, e.g. Resistor_SMD:R_0805_2012Metric, Capacitor_SMD:C_0805_2012Metric,
+  LED_SMD:LED_0805_2012Metric, Package_DIP:DIP-8_W7.62mm, Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal.
 - "flow" lists the main signal path from input to output (optional).
 If you receive an ERROR message, fix exactly that problem and reply with the full corrected JSON."""
 
@@ -150,6 +155,63 @@ def _extract_json(text):
     if a < 0 or b < a:
         raise AIError("the model did not return JSON")
     return json.loads(t[a:b + 1])
+
+
+def _footprint_dirs():
+    import glob
+    dirs = [v for k, v in os.environ.items() if k.startswith("KICAD") and k.endswith("FOOTPRINT_DIR") and v]
+    dirs += ["/usr/share/kicad/footprints", r"D:\programs\kicad\share\kicad\footprints"]
+    dirs += sorted(glob.glob(r"C:\Program Files\KiCad\*\share\kicad\footprints"), reverse=True)
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+def lint(intent, library):
+    """Design-sense checks the drawing verifier cannot see. Returns a list of problems."""
+    probs = []
+    used = {}
+    for n in intent.get("nets", []):
+        for p in n.get("pins", []):
+            used[p] = n["name"]
+    fps = _footprint_dirs()
+    for c in intent.get("components", []):
+        ref = c.get("ref", "")
+        if not re.match(r"^[A-Z]+[0-9]+$", ref):
+            probs.append("ref '%s' must be letters + number (R1, C2, D1, U1, J1)" % ref)
+        try:
+            sym = library.get(c["symbol"])
+        except Exception:
+            continue                                  # the engine reports unknown symbols itself
+        pins = [p for p in sym.pins if not p.hidden]
+        def connected(p):
+            return ("%s.%s" % (ref, p.number) in used) or ("%s.%s" % (ref, p.name) in used)
+        if len(pins) <= 3 and all(p.etype == "passive" for p in pins) or sym.lib_id.startswith("Device:LED") \
+                or sym.lib_id.startswith("Device:D"):
+            for p in pins:
+                if not connected(p):
+                    probs.append("%s (%s) pin %s is not connected: a part with a floating pin does nothing"
+                                 % (ref, c.get("value", ""), p.number))
+        else:
+            for p in pins:
+                if p.etype in ("input", "power_in") and p.name.upper() not in ("NC", "N.C.") and not connected(p):
+                    probs.append("%s pin %s (%s) is an %s and is left unconnected; tie it as the datasheet says"
+                                 % (ref, p.number, p.name, p.etype))
+        fp = c.get("footprint", "")
+        if fps and fp:
+            if ":" not in fp:
+                probs.append("%s footprint '%s' must be Library:Name" % (ref, fp))
+            else:
+                lib, name = fp.split(":", 1)
+                if not any(os.path.exists(os.path.join(d, lib + ".pretty", name + ".kicad_mod")) for d in fps):
+                    near = []
+                    for d in fps:
+                        pd = os.path.join(d, lib + ".pretty")
+                        if os.path.isdir(pd):
+                            key = re.split(r"[_-]", name)[:2]
+                            near += [f[:-10] for f in os.listdir(pd) if f.endswith(".kicad_mod")
+                                     and all(k.lower() in f.lower() for k in key)][:6]
+                    probs.append("%s footprint '%s' does not exist%s" % (
+                        ref, fp, (". Close matches in %s: %s" % (lib, ", ".join(near))) if near else ""))
+    return probs
 
 
 def design(request, out_path, cfg=None, library=None, max_tries=4, log=print):
@@ -169,6 +231,13 @@ def design(request, out_path, cfg=None, library=None, max_tries=4, log=print):
         except (AIError, ValueError) as e:
             last_err = "Your reply was not valid JSON (%s). Reply with the JSON object only." % e
             messages.append({"role": "user", "content": "ERROR: " + last_err})
+            continue
+        from .library import Library
+        problems = lint(intent, library or Library())
+        if problems:
+            last_err = "; ".join(problems[:8])
+            log("    design check failed: " + last_err)
+            messages.append({"role": "user", "content": "ERROR: design problems: " + last_err})
             continue
         try:
             sch, rep = build(intent, out_path, library)

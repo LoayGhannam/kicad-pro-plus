@@ -12,9 +12,9 @@ import subprocess
 import urllib.request
 
 # below this speed a full design (several thousand tokens, several attempts) takes too long
-MIN_TOKENS_PER_S = 2.0
+MIN_TOKENS_PER_S = 8.0
 # models smaller than this make many design mistakes
-MIN_GOOD_PARAMS_B = 25
+MIN_GOOD_PARAMS_B = 20      # below this a local model is refused for design
 
 
 def gpus():
@@ -97,18 +97,19 @@ def assess(base_url, model):
             "%s %s It needs about %.0f GB of memory in total, more than this computer has. "
             "Choose a smaller model, or use an online provider (Claude, OpenAI, DeepSeek) in Settings." % (spec, mdesc, need))
     # mixture-of-experts models only use a small part per token, so they tolerate CPU offload
-    min_share = 0.35 if moe else 0.6
+    min_share = 0.6 if moe else 0.9
     if on_gpu < min_share:
         return False, "slow", "Too slow on this computer", (
             "%s %s Only about %d%% of it fits in graphics memory; the rest would run on the processor, "
-            "so one design would take tens of minutes or time out. For local design you need a GPU with "
-            "about %.0f GB or more. Otherwise use an online provider (Claude, OpenAI, DeepSeek) in Settings, "
-            "or a smaller model (faster, but less accurate)." % (spec, mdesc, on_gpu * 100, need * min_share + 0.5))
+            "so one design would take many minutes per attempt. This model needs a GPU with at least %.0f GB of "
+            "graphics memory.\n\nMinimum for local design: an NVIDIA GPU with 16 GB (gpt-oss:20b); "
+            "recommended 24 GB or more (30B+ models).\nOtherwise use an online provider in Settings "
+            "(Claude, OpenAI, DeepSeek, Kimi)." % (spec, mdesc, on_gpu * 100, need * min_share + 0.5))
     if params is not None and params < MIN_GOOD_PARAMS_B:
-        return True, "weak", "Runs, but designs will often be wrong", (
-            "%s %s Models below about %dB parameters make many wiring and part mistakes. The checks stop "
-            "wrong designs from reaching your schematic, but expect several attempts or a failure. "
-            "For reliable designs use a 30B+ model on a 24 GB GPU, or an online provider." % (spec, mdesc, MIN_GOOD_PARAMS_B))
+        return False, "weak", "Model too small for circuit design", (
+            "%s %s Models below %dB parameters make too many wiring and part mistakes to design circuits. "
+            "Minimum: gpt-oss:20b on a 16 GB GPU; recommended: a 30B+ model on a 24 GB GPU, "
+            "or an online provider in Settings." % (spec, mdesc, MIN_GOOD_PARAMS_B))
     return True, "good", "This computer can run this model", spec + " " + mdesc
 
 

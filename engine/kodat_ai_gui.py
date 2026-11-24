@@ -267,7 +267,8 @@ class SettingsPage(wx.Panel):
             g.Add(wx.StaticText(self, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
             g.Add(ctl, 1, wx.EXPAND)
         hint = wx.StaticText(self, label=(
-            "Claude / OpenAI / DeepSeek need an API key. Ollama runs on this computer, no key.\n"
+            "Claude / OpenAI / DeepSeek / Kimi (via Fireworks) need an API key. Ollama runs on this computer, no key\n"
+            "(local design needs an NVIDIA GPU with 16 GB+; 24 GB recommended).\n"
             "Custom = any OpenAI-compatible service (OpenRouter, LM Studio, Groq...): set its Base URL.\n"
             "Settings are saved only on this computer: %s" % ai.config_path()))
         self.save = wx.Button(self, label="Save")

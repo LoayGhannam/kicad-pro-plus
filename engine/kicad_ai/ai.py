@@ -27,6 +27,8 @@ PRESETS = {
                  "model": "gpt-4.1", "key_env": "OPENAI_API_KEY"},
     "deepseek": {"kind": "openai", "base_url": "https://api.deepseek.com/v1",
                  "model": "deepseek-chat", "key_env": "DEEPSEEK_API_KEY"},
+    "kimi":     {"kind": "openai", "base_url": "https://api.fireworks.ai/inference/v1",
+                 "model": "accounts/fireworks/models/kimi-k3p1-pro", "key_env": "FIREWORKS_API_KEY"},
     "ollama":   {"kind": "ollama", "base_url": "http://localhost:11434",
                  "model": "qwen2.5:7b", "key_env": None},
     "custom":   {"kind": "openai", "base_url": "", "model": "", "key_env": "AI_API_KEY"},
@@ -488,8 +490,7 @@ def design(request, out_path, cfg=None, library=None, max_tries=6, log=print, pr
         ok, level, title, text = hardware.assess(prov.base_url, prov.model)
         if not ok:
             raise AIError("HARDWARE: %s\n%s" % (title, text))
-        if level == "weak":
-            log("    note: " + title + ". " + text)
+
     messages = [{"role": "user", "content": request}]
     last_err = None
     for attempt in range(1, max_tries + 1):

@@ -106,6 +106,20 @@ static void buildKicadAboutBanner( EDA_BASE_FRAME* aParent, ABOUT_APP_INFO& aInf
     // info/description part HTML formatted:
     wxString description;
 
+    /* KODAT PCB: say clearly what this is and what it is built on */
+    description << wxT( "<p><b><u>KODAT PCB</u></b>" )
+                << wxT( "<p>KODAT PCB is a modified version of KiCad " )
+                << GetMajorMinorVersion()
+                << wxT( ", made by KODAT. It adds an AI schematic assistant, a verified "
+                        "auto-drawing engine and a reworked user interface.</p>" )
+                << wxT( "<p>It is based on the KiCad EDA Suite and is distributed under the "
+                        "same GNU GPL licence. All credit for KiCad itself belongs to the KiCad "
+                        "developers and contributors listed in this dialog. KODAT PCB is not "
+                        "made or endorsed by the KiCad project.</p>" )
+                << wxT( "<ul><li>KODAT PCB source: "
+                        "<a href='https://github.com/LoayGhannam/kicad-pro-plus'>"
+                        "github.com/LoayGhannam/kicad-pro-plus</a></li></ul></p>" );
+
     /* short description */
     description << wxT( "<p>" );
     description << wxT( "<b><u>" )

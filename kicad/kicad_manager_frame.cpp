@@ -285,9 +285,9 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
     }
 
     if( ADVANCED_CFG::GetCfg().m_HideVersionFromTitle )
-        SetTitle( wxT( "KiCad" ) );
+        SetTitle( wxT( "KODAT PCB" ) );
     else
-        SetTitle( wxString( "KiCad " ) + GetMajorMinorVersion() );
+        SetTitle( wxString( "KODAT PCB " ) + GetMajorMinorVersion() );
 
     // Do not let the messages window have initial focus
     m_projectTreePane->SetFocus();
@@ -1305,9 +1305,9 @@ void KICAD_MANAGER_FRAME::ProjectChanged()
     }
 
     if( ADVANCED_CFG::GetCfg().m_HideVersionFromTitle )
-        title += wxT( " \u2014 " ) + wxString( wxS( "KiCad" ) );
+        title += wxT( " \u2014 " ) + wxString( wxS( "KODAT PCB" ) );
     else
-        title += wxT( " \u2014 " ) + wxString( wxS( "KiCad " ) ) + GetMajorMinorVersion();
+        title += wxT( " \u2014 " ) + wxString( wxS( "KODAT PCB " ) ) + GetMajorMinorVersion();
 
     SetTitle( title );
 

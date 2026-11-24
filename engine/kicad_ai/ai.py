@@ -74,7 +74,8 @@ class Provider:
         self.timeout = float(cfg.get("timeout", 900))
         self.num_ctx = cfg.get("num_ctx", 32768)        # Ollama context window
         self.think = cfg.get("think", "medium")          # gpt-oss: low/medium/high; others: on/off
-        self.progress = None                              # callback(str) for live status   # big local models can be slow
+        self.progress = None                              # callback(str) for live status
+        self.skip_hw = bool(cfg.get("skip_hardware_check"))   # big local models can be slow
         if not self.base_url:
             raise AIError("provider 'custom' needs base_url")
         if not self.model:
@@ -99,7 +100,7 @@ class Provider:
         body = dict(body, stream=True)
         req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
                                      headers={"content-type": "application/json"})
-        parts, n_think, n_text, t0, last = [], 0, 0, time.time(), 0
+        parts, n_think, n_text, t0, last, first = [], 0, 0, time.time(), 0, None
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 for line in r:
@@ -109,6 +110,17 @@ class Provider:
                     if d.get("error"):
                         raise AIError("ollama: %s" % d["error"])
                     m = d.get("message") or {}
+                    if (m.get("thinking") or m.get("content")) and first is None:
+                        first = time.time()             # speed is measured after the model has loaded
+                    if first is not None and not self.skip_hw:
+                        from .hardware import too_slow, MIN_TOKENS_PER_S
+                        el = time.time() - first
+                        if too_slow(n_think + n_text, el):
+                            raise AIError("HARDWARE: Too slow on this computer\nThe model is producing %.1f tokens "
+                                          "per second (minimum %.0f). A design needs several thousand tokens and "
+                                          "several attempts, so it would take far too long. Use a smaller model, "
+                                          "a computer with more graphics memory, or an online provider in Settings."
+                                          % ((n_think + n_text) / el, MIN_TOKENS_PER_S))
                     if m.get("thinking"):
                         n_think += 1
                     if m.get("content"):
@@ -468,8 +480,16 @@ def design(request, out_path, cfg=None, library=None, max_tries=6, log=print, pr
     from .engine import IntentError
     from . import build
 
-    prov = Provider(cfg or load_config())
+    cfg = cfg or load_config()
+    prov = Provider(cfg)
     prov.progress = progress
+    if prov.kind == "ollama" and not cfg.get("skip_hardware_check"):
+        from . import hardware
+        ok, level, title, text = hardware.assess(prov.base_url, prov.model)
+        if not ok:
+            raise AIError("HARDWARE: %s\n%s" % (title, text))
+        if level == "weak":
+            log("    note: " + title + ". " + text)
     messages = [{"role": "user", "content": request}]
     last_err = None
     for attempt in range(1, max_tries + 1):

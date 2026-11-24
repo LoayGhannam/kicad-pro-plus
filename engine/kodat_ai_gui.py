@@ -218,6 +218,12 @@ class DesignPage(wx.Panel):
         if self.cancelled:
             return
         self.go.Enable(); self.stop.Disable()
+        if msg.startswith("HARDWARE:"):
+            title, _, text = msg[len("HARDWARE:"):].strip().partition("\n")
+            self.status.set("error", title)
+            self._say("STOPPED: " + title + ". " + text)
+            wx.MessageBox(text, "KODAT PCB - " + title, wx.OK | wx.ICON_WARNING, self)
+            return
         self.status.set("error", "Stopped with an error (details below)")
         self._say("ERROR: " + msg)
 
@@ -266,9 +272,11 @@ class SettingsPage(wx.Panel):
             "Settings are saved only on this computer: %s" % ai.config_path()))
         self.save = wx.Button(self, label="Save")
         self.test = wx.Button(self, label="Test connection")
+        self.hw = wx.Button(self, label="Check this computer")
         self.status = StatusBar(self)
+        self.hw.Show(self.prov.GetStringSelection() == "ollama")
         b = wx.BoxSizer(wx.HORIZONTAL)
-        b.Add(self.save, 0, wx.RIGHT, 6); b.Add(self.test, 0)
+        b.Add(self.save, 0, wx.RIGHT, 6); b.Add(self.test, 0, wx.RIGHT, 6); b.Add(self.hw, 0)
         s = wx.BoxSizer(wx.VERTICAL)
         s.Add(g, 0, wx.EXPAND | wx.ALL, 12)
         s.Add(hint, 0, wx.LEFT | wx.RIGHT, 12)
@@ -279,6 +287,7 @@ class SettingsPage(wx.Panel):
         self.refresh.Bind(wx.EVT_BUTTON, lambda e: self.list_models())
         self.save.Bind(wx.EVT_BUTTON, lambda e: self.do_save())
         self.test.Bind(wx.EVT_BUTTON, self.on_test)
+        self.hw.Bind(wx.EVT_BUTTON, self.on_hw)
         self.on_prov(None)
 
     def cfg(self):
@@ -295,6 +304,8 @@ class SettingsPage(wx.Panel):
         p = self.prov.GetStringSelection()
         is_ollama = p == "ollama"
         self.refresh.Show(is_ollama); self.key.Enable(not is_ollama)
+        if hasattr(self, "hw"):
+            self.hw.Show(is_ollama)
         if not self.model.GetValue():
             self.model.SetValue(ai.PRESETS[p]["model"])
         if is_ollama:
@@ -318,6 +329,18 @@ class SettingsPage(wx.Panel):
         ai.save_config(self.cfg())
         self.frame.design.refresh_who()
         self.status.set("done", "Saved")
+
+    def on_hw(self, _evt):
+        c = self.cfg()
+        if c["provider"] != "ollama":
+            wx.MessageBox("Online providers run on their servers, so this computer's hardware does not matter.",
+                          "KODAT PCB - hardware check", wx.OK | wx.ICON_INFORMATION, self)
+            return
+        from kicad_ai import hardware
+        ok, level, title, text = hardware.assess(c.get("base_url") or ai.PRESETS["ollama"]["base_url"], c["model"])
+        icon = wx.ICON_INFORMATION if level == "good" else wx.ICON_WARNING
+        self.status.set("done" if level == "good" else "error" if not ok else "check", title)
+        wx.MessageBox(text, "KODAT PCB - " + title, wx.OK | icon, self)
 
     def on_test(self, _evt):
         self.do_save()
